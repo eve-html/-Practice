@@ -10,202 +10,105 @@ import (
 	"time"
 )
 
+// ConfigFromS3 структура конфига из S3
+type ConfigFromS3 struct {
+	Version        string `json:"version"`
+	Workload       string `json:"workload"`
+	CPULimit       int    `json:"cpu_limit,omitempty"`
+	Memory         string `json:"memory,omitempty"`
+	HealthInterval string `json:"health_check_interval,omitempty"`
+	Message        string `json:"message,omitempty"`
+}
+
 func main() {
-	// Парсинг флагов
-	serviceID := flag.String("id", "", "Service ID (required)")
-	port := flag.Int("port", 10000, "Service port")
-	configPath := flag.String("config", "", "Config file path (optional)")
+	// Парсинг аргументов
+	id := flag.String("id", "test", "Service ID")
+	port := flag.Int("port", 8080, "Service port")
+	configFile := flag.String("config", "", "Config file path (from S3)")
+	s3Config := flag.Bool("s3-config", false, "Config is from S3")
 	flag.Parse()
 
-	if *serviceID == "" {
-		// Пробуем получить из переменной окружения
-		*serviceID = os.Getenv("SERVICE_ID")
-		if *serviceID == "" {
-			log.Fatal("Service ID is required")
-		}
-	}
+	log.Printf("Payload service %s starting on port %d", *id, *port)
 
-	if *port == 0 {
-		portStr := os.Getenv("PORT")
-		if portStr != "" {
-			fmt.Sscanf(portStr, "%d", port)
-		}
-		if *port == 0 {
-			*port = 10000
-		}
-	}
+	var s3ConfigData ConfigFromS3
+	var configSource string
 
-	// Создаем и запускаем сервис
-	service := &PayloadService{
-		ID:         *serviceID,
-		Port:       *port,
-		ConfigPath: *configPath, // Сохраняем путь к конфигу
-	}
-
-	log.Printf("Payload service %s starting on port %d", *serviceID, *port)
-	if *configPath != "" {
-		log.Printf("Using config file: %s", *configPath)
-	}
-	service.Start()
-}
-
-// PayloadService - сервис полезной нагрузки
-type PayloadService struct {
-	ID         string
-	Port       int
-	ConfigPath string
-	StartTime  time.Time
-}
-
-// Start запускает сервис
-func (ps *PayloadService) Start() {
-	ps.StartTime = time.Now()
-
-	// Загружаем конфигурацию если указан путь
-	if ps.ConfigPath != "" {
-		if err := ps.loadConfig(); err != nil {
+	if *configFile != "" {
+		configData, err := os.ReadFile(*configFile)
+		if err == nil {
+			if *s3Config {
+				configSource = "S3"
+				if err := json.Unmarshal(configData, &s3ConfigData); err == nil {
+					log.Printf("Loaded S3 config: %+v", s3ConfigData)
+				}
+			} else {
+				configSource = "local"
+				log.Printf("Loaded local config: %s", string(configData))
+			}
+		} else {
 			log.Printf("Warning: failed to load config: %v", err)
 		}
 	}
 
-	mux := http.NewServeMux()
-
-	// Health endpoint для проверки контроллером
-	mux.HandleFunc("/health", ps.healthHandler)
-
-	// Work endpoint для эмутации полезной нагрузки
-	mux.HandleFunc("/work", ps.workHandler)
-
-	// Info endpoint для получения информации о сервисе
-	mux.HandleFunc("/info", ps.infoHandler)
-
-	// Metrics endpoint для метрик
-	mux.HandleFunc("/metrics", ps.metricsHandler)
-
-	// Config endpoint для просмотра конфигурации
-	mux.HandleFunc("/config", ps.configHandler)
-
-	// Старт HTTP сервера
-	addr := fmt.Sprintf(":%d", ps.Port)
-	server := &http.Server{
-		Addr:         addr,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-	}
-
-	log.Printf("Service %s listening on %s", ps.ID, addr)
-
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Failed to start service: %v", err)
-	}
-}
-
-// loadConfig загружает конфигурацию из файла
-func (ps *PayloadService) loadConfig() error {
-	data, err := os.ReadFile(ps.ConfigPath)
-	if err != nil {
-		return err
-	}
-
-	var config struct {
-		Name      string `json:"name"`
-		WorkDelay int    `json:"work_delay_ms"`
-		LogLevel  string `json:"log_level"`
-	}
-
-	if err := json.Unmarshal(data, &config); err != nil {
-		return err
-	}
-
-	log.Printf("Loaded config: name=%s, work_delay=%dms, log_level=%s",
-		config.Name, config.WorkDelay, config.LogLevel)
-
-	return nil
-}
-
-// healthHandler проверяет здоровье сервиса
-func (ps *PayloadService) healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"service_id": ps.ID,
-		"status":     "healthy",
-		"uptime":     time.Since(ps.StartTime).String(),
-		"timestamp":  time.Now().Format(time.RFC3339),
-		"port":       ps.Port,
-	})
-}
-
-// workHandler эмулирует полезную работу
-func (ps *PayloadService) workHandler(w http.ResponseWriter, r *http.Request) {
-	// Имитация обработки запроса
-	start := time.Now()
-
-	// Эмутация работы (50-150ms)
-	workDuration := 50 + time.Duration(time.Now().UnixNano()%100)*time.Millisecond
-	time.Sleep(workDuration)
-
-	// Генерация ответа
-	response := map[string]interface{}{
-		"service_id": ps.ID,
-		"status":     "work_completed",
-		"work_time":  time.Since(start).String(),
-		"result":     "success",
-		"data":       "Sample work result",
-		"timestamp":  time.Now().Format(time.RFC3339),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-}
-
-// infoHandler возвращает информацию о сервисе
-func (ps *PayloadService) infoHandler(w http.ResponseWriter, r *http.Request) {
-	hostname, _ := os.Hostname()
-
-	info := map[string]interface{}{
-		"id":          ps.ID,
-		"port":        ps.Port,
-		"started_at":  ps.StartTime.Format(time.RFC3339),
-		"uptime":      time.Since(ps.StartTime).String(),
-		"hostname":    hostname,
-		"pid":         os.Getpid(),
-		"config_path": ps.ConfigPath,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(info)
-}
-
-// metricsHandler возвращает метрики сервиса
-func (ps *PayloadService) metricsHandler(w http.ResponseWriter, r *http.Request) {
-	metrics := map[string]interface{}{
-		"service_id":      ps.ID,
-		"uptime_seconds":  time.Since(ps.StartTime).Seconds(),
-		"status":          "running",
-		"timestamp":       time.Now().Unix(),
-		"requests_served": 0, // Можно добавить счетчик запросов
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metrics)
-}
-
-// configHandler возвращает информацию о конфигурации
-func (ps *PayloadService) configHandler(w http.ResponseWriter, r *http.Request) {
-	configInfo := map[string]interface{}{
-		"service_id":  ps.ID,
-		"config_path": ps.ConfigPath,
-		"has_config":  ps.ConfigPath != "",
-		"timestamp":   time.Now().Format(time.RFC3339),
-	}
-
-	if ps.ConfigPath != "" {
-		if data, err := os.ReadFile(ps.ConfigPath); err == nil {
-			configInfo["config_content"] = string(data)
+	// HTTP обработчики
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		response := map[string]interface{}{
+			"status":      "healthy",
+			"service":     *id,
+			"port":        *port,
+			"timestamp":   time.Now().Format(time.RFC3339),
+			"uptime":      time.Since(startTime).String(),
+			"config_from": configSource,
 		}
-	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(configInfo)
+		// Добавляем информацию о S3 конфиге если есть
+		if configSource == "S3" {
+			response["s3_config"] = s3ConfigData
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	})
+
+	http.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
+		response := map[string]interface{}{
+			"service_id":    *id,
+			"config_file":   *configFile,
+			"config_from":   configSource,
+			"has_s3_config": configSource == "S3",
+		}
+
+		if configSource == "S3" {
+			response["s3_config"] = s3ConfigData
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	})
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		message := "Payload service is running"
+		if configSource == "S3" {
+			message = fmt.Sprintf("Payload service is running with S3 config: %s", s3ConfigData.Workload)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"service": *id,
+			"message": message,
+			"config":  configSource,
+			"uptime":  time.Since(startTime).String(),
+		})
+	})
+
+	// Запуск сервера
+	addr := fmt.Sprintf(":%d", *port)
+	log.Printf("Service %s listening on %s", *id, addr)
+	log.Printf("Config source: %s", configSource)
+
+	if err := http.ListenAndServe(addr, nil); err != nil {
+		log.Fatal(err)
+	}
 }
+
+var startTime = time.Now()

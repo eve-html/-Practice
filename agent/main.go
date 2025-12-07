@@ -48,6 +48,8 @@ func main() {
 	// Запуск сервера
 	go func() {
 		log.Printf("Agent %s starting on %s", *id, addr)
+		log.Printf("Controller: %s", *controllerURL)
+		log.Printf("Features: S3 config support, health monitoring")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to start agent server: %v", err)
 		}
